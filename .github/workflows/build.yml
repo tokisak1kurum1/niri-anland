@@ -20,6 +20,11 @@ jobs:
       image: debian:trixie
 
     steps:
+      - name: Install Git before checkout
+        run: |
+          apt-get update -y
+          apt-get install -y git ca-certificates
+
       - uses: actions/checkout@v6
         with:
           show-progress: false
@@ -27,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update -y
-          apt-get install -y ${{ env.DEPS_APT }} git ccache
+          apt-get install -y ${{ env.DEPS_APT }} ccache
 
       - name: Install Rust
         run: |
@@ -69,17 +74,24 @@ jobs:
 
       - name: Compare test baseline on anland
         if: always()
-        continue-on-error: true
         run: |
           export PATH="$HOME/.cargo/bin:${PATH}"
           export CC="ccache gcc"
           export CXX="ccache g++"
           export CARGO_BUILD_JOBS=4
+          git rev-parse --show-toplevel
           git fetch --no-tags --depth=1 origin anland
-          git worktree add --detach /tmp/niri-base FETCH_HEAD
+          BASE_SHA="$(git rev-parse FETCH_HEAD)"
+          echo "BASELINE_COMMIT=$BASE_SHA"
+          git worktree add --detach /tmp/niri-base "$BASE_SHA"
           cd /tmp/niri-base
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          set +e
           cargo test --workspace --exclude anland-sys
+          BASELINE_TEST_EXIT_CODE=$?
+          set -e
+          echo "BASELINE_TEST_EXIT_CODE=$BASELINE_TEST_EXIT_CODE"
+          exit 0
 
       - name: Build
         if: always()
