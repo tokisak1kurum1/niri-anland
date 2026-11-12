@@ -225,6 +225,7 @@ extern "C" {
         userdata: *mut c_void,
     ) -> c_int;
     pub fn is_fallback(ctx: *mut display_ctx) -> bool;
+    pub fn invalidate_consumer(ctx: *mut display_ctx);
     pub fn try_exit_fallback(ctx: *mut display_ctx) -> c_int;
     pub fn get_data_fd(ctx: *mut display_ctx) -> c_int;
     pub fn get_audio_fd(ctx: *mut display_ctx) -> c_int;
@@ -292,6 +293,10 @@ impl AnlandContext {
         // required: the reconnect timer gates on this and the cached flag was never
         // updated when C entered fallback, which froze the reconnect loop forever.
         unsafe { is_fallback(self.ctx) }
+    }
+
+    pub fn invalidate_consumer(&mut self) {
+        unsafe { invalidate_consumer(self.ctx); }
     }
 
     pub fn try_exit_fallback(&mut self) -> Result<(), ()> {
