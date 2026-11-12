@@ -654,10 +654,6 @@ impl Anland {
                 warn!("buffer_ready eventfd read error: {err}");
                 return;
             }
-            if ret as usize != std::mem::size_of::<u64>() {
-                warn!("buffer_ready eventfd short read: {ret}");
-                return;
-            }
             anland.pending_buffer_request = true;
             if let Some(output) = anland.output.clone() {
                 state.niri.queue_redraw(&output);
