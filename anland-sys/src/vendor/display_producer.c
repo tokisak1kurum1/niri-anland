@@ -89,6 +89,13 @@ static void enter_fallback(display_ctx *ctx)
         ctx->fallback_cb(ctx->fallback_userdata);
 }
 
+/* Called when a coalesced buffer-ready event loses the selected-slot mapping. */
+void invalidate_consumer(display_ctx *ctx)
+{
+    if (ctx)
+        enter_fallback(ctx);
+}
+
 /*
  * Ask the daemon for the consumer-side fds and map the shm index. Polls ctrl_fd
  * with a short timeout so it returns promptly when no consumer is up yet. On
@@ -378,6 +385,9 @@ int trigger_refresh(display_ctx *ctx)
     }
     if (sent != 1) {
         ANLAND_LOG("render completion sendmsg failed (ret=%zd errno=%d)", sent, send_errno);
+        // The fence has been consumed and may not be replayed. Drop this
+        // consumer so the reconnect path obtains fresh buffers and FDs.
+        enter_fallback(ctx);
         return -1;
     }
     return 0;
