@@ -79,11 +79,15 @@ jobs:
           export CC="ccache gcc"
           export CXX="ccache g++"
           export CARGO_BUILD_JOBS=4
+          # The container runs as root while GitHub sets HOME=/github/home.
+          # Use system config so Git's ownership check is independent of HOME.
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
           git rev-parse --show-toplevel
           git fetch --no-tags --depth=1 origin anland
           BASE_SHA="$(git rev-parse FETCH_HEAD)"
           echo "BASELINE_COMMIT=$BASE_SHA"
           git worktree add --detach /tmp/niri-base "$BASE_SHA"
+          git config --system --add safe.directory /tmp/niri-base
           cd /tmp/niri-base
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
           set +e
