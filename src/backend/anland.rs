@@ -478,6 +478,7 @@ impl Anland {
         let count = self.ctx.buffer_count() as usize;
         if count == 0 {
             warn!("connected but got 0 dmabufs");
+            self.ctx.invalidate_consumer();
             return;
         }
 
@@ -496,12 +497,11 @@ impl Anland {
 
         for i in 0..count {
             let raw_fd = self.ctx.dmabuf_fd_at(i as i32);
-            if raw_fd < 0 {
-                continue;
-            }
-            let info = match self.ctx.dmabuf_info_at(i as i32) {
-                Some(info) => info,
-                None => continue,
+            let Some(info) = self.ctx.dmabuf_info_at(i as i32).filter(|_| raw_fd >= 0) else {
+                warn!("missing dmabuf at index {i}");
+                self.dmabufs.clear();
+                self.ctx.invalidate_consumer();
+                return;
             };
             if dmabuf_w == 0 {
                 dmabuf_w = info.width;
@@ -509,7 +509,12 @@ impl Anland {
             }
             match self.import_raw_dmabuf(raw_fd, &info) {
                 Ok(dmabuf) => self.dmabufs.push(dmabuf),
-                Err(e) => warn!("failed to import dmabuf {}: {e:?}", i),
+                Err(e) => {
+                    warn!("failed to import dmabuf {i}: {e:?}");
+                    self.dmabufs.clear();
+                    self.ctx.invalidate_consumer();
+                    return;
+                }
             }
         }
 
@@ -1036,6 +1041,9 @@ impl Anland {
 
         let idx = self.ctx.selected_buffer_index();
         if idx < 0 || idx as usize >= self.dmabufs.len() {
+            warn!("selected dmabuf index {idx} is invalid");
+            self.pending_buffer_request = false;
+            self.ctx.invalidate_consumer();
             return RenderResult::Skipped;
         }
 
@@ -1067,6 +1075,8 @@ impl Anland {
             Ok(t) => t,
             Err(e) => {
                 warn!("error binding dmabuf: {e:?}");
+                self.pending_buffer_request = false;
+                self.ctx.invalidate_consumer();
                 return RenderResult::Skipped;
             }
         };
@@ -1082,6 +1092,9 @@ impl Anland {
             Ok(r) => r,
             Err(e) => {
                 warn!("render error: {e:?}");
+                drop(target);
+                self.pending_buffer_request = false;
+                self.ctx.invalidate_consumer();
                 return RenderResult::Skipped;
             }
         };
@@ -1103,14 +1116,11 @@ impl Anland {
             // Even if no pixels changed, acknowledge this dequeued buffer;
             // otherwise it times out and forcibly disconnects the display.
             self.ctx.set_render_fence(-1);
+            self.pending_buffer_request = false;
             if !self.ctx.trigger_refresh() {
-                // The C producer has entered fallback after the failed send.
-                // Do not keep a stale in-flight request across reconnects.
-                self.pending_buffer_request = false;
                 warn!("failed to acknowledge no-damage Android buffer request");
                 return RenderResult::Skipped;
             }
-            self.pending_buffer_request = false;
             return RenderResult::NoDamage;
         }
 
@@ -1184,12 +1194,11 @@ impl Anland {
         self.register_heartbeat_timer(niri);
 
         // Acknowledge the current Android buffer request.
+        self.pending_buffer_request = false;
         if !self.ctx.trigger_refresh() {
-            self.pending_buffer_request = false;
             warn!("failed to submit Android render completion");
             return RenderResult::Skipped;
         }
-        self.pending_buffer_request = false;
 
         RenderResult::Submitted
     }
