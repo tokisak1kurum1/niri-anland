@@ -651,11 +651,6 @@ int create_native_render_fence(void *egl_display)
 
     init_egl_procs();
 
-    // MUST flush GL pipeline before creating fence sync
-    if (s_pGlFlush) {
-        s_pGlFlush();
-    }
-
     if (!s_pCreateSync || !s_pDupFence || !s_pDestroySync) {
         return -1;
     }
@@ -663,6 +658,12 @@ int create_native_render_fence(void *egl_display)
     void *sync = s_pCreateSync(egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
     if (sync == EGL_NO_SYNC_KHR || !sync) {
         return -1;
+    }
+
+    // Creating the sync inserts the fence into the GL command stream.
+    // Flush afterwards so Android can wait on the exported fence FD.
+    if (s_pGlFlush) {
+        s_pGlFlush();
     }
 
     int fence_fd = s_pDupFence(egl_display, sync);
