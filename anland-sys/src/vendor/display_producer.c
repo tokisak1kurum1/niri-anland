@@ -354,10 +354,10 @@ int trigger_refresh(display_ctx *ctx)
      * the consumer's per-frame recv always has exactly one message (it then queues
      * with -1). The consumer hands the fence to queueBuffer -> SurfaceFlinger waits
      * GPU-side. NON-BLOCKING: this runs on kwin's main thread, which must never block
-     * on our socket. In lockstep the consumer always drains, so the one-message
-     * buffer never fills; a momentary miss self-heals via the consumer's 5s
-     * poll->fallback rather than freezing the compositor. data_fd's reverse direction
-     * is intentionally left unused (reserved for future extension). */
+     * on our socket. In lockstep the consumer normally drains the message.
+     * On send failure, drop the consumer immediately: the completed fence FD
+     * cannot safely be replayed after the producer has relinquished ownership.
+     * data_fd's reverse direction is reserved for future extension. */
     char b = 0;
     struct iovec iov = { .iov_base = &b, .iov_len = 1 };
     union {
