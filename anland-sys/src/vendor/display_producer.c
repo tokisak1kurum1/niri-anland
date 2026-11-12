@@ -370,10 +370,15 @@ int trigger_refresh(display_ctx *ctx)
         c->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(c), &ctx->pending_render_fence, sizeof(int));
     }
-    sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t sent = sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    int send_errno = errno;
     if (ctx->pending_render_fence >= 0) {
         close(ctx->pending_render_fence);
         ctx->pending_render_fence = -1;
+    }
+    if (sent != 1) {
+        ANLAND_LOG("render completion sendmsg failed (ret=%zd errno=%d)", sent, send_errno);
+        return -1;
     }
     return 0;
 }
