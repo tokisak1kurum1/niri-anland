@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - anland
+      - ci/build-minimal-frame-handshake-20261112
     tags:
       - '*-anland.*'
   workflow_dispatch:
