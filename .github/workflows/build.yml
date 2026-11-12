@@ -69,6 +69,7 @@ jobs:
           cargo +nightly fmt --all -- --check
 
       - name: Run tests
+        if: always()
         run: |
           export PATH="$HOME/.cargo/bin:${PATH}"
           export CC="ccache gcc"
