@@ -89,6 +89,13 @@ static void enter_fallback(display_ctx *ctx)
         ctx->fallback_cb(ctx->fallback_userdata);
 }
 
+/* Called when a coalesced buffer-ready event loses the selected-slot mapping. */
+void invalidate_consumer(display_ctx *ctx)
+{
+    if (ctx)
+        enter_fallback(ctx);
+}
+
 /*
  * Ask the daemon for the consumer-side fds and map the shm index. Polls ctrl_fd
  * with a short timeout so it returns promptly when no consumer is up yet. On
@@ -347,10 +354,10 @@ int trigger_refresh(display_ctx *ctx)
      * the consumer's per-frame recv always has exactly one message (it then queues
      * with -1). The consumer hands the fence to queueBuffer -> SurfaceFlinger waits
      * GPU-side. NON-BLOCKING: this runs on kwin's main thread, which must never block
-     * on our socket. In lockstep the consumer always drains, so the one-message
-     * buffer never fills; a momentary miss self-heals via the consumer's 5s
-     * poll->fallback rather than freezing the compositor. data_fd's reverse direction
-     * is intentionally left unused (reserved for future extension). */
+     * on our socket. In lockstep the consumer normally drains the message.
+     * On send failure, drop the consumer immediately: the completed fence FD
+     * cannot safely be replayed after the producer has relinquished ownership.
+     * data_fd's reverse direction is reserved for future extension. */
     char b = 0;
     struct iovec iov = { .iov_base = &b, .iov_len = 1 };
     union {
@@ -370,10 +377,18 @@ int trigger_refresh(display_ctx *ctx)
         c->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(c), &ctx->pending_render_fence, sizeof(int));
     }
-    sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t sent = sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    int send_errno = errno;
     if (ctx->pending_render_fence >= 0) {
         close(ctx->pending_render_fence);
         ctx->pending_render_fence = -1;
+    }
+    if (sent != 1) {
+        ANLAND_LOG("render completion sendmsg failed (ret=%zd errno=%d)", sent, send_errno);
+        // The fence has been consumed and may not be replayed. Drop this
+        // consumer so the reconnect path obtains fresh buffers and FDs.
+        enter_fallback(ctx);
+        return -1;
     }
     return 0;
 }

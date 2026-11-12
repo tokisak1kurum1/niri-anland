@@ -269,6 +269,10 @@ pub struct Anland {
     data_source_token: Option<RegistrationToken>,
     heartbeat_timer_token: Option<RegistrationToken>,
     full_damage_frames_remaining: usize,
+    // One Android dequeue request permits exactly one frame completion.
+    // Niri animations may queue redraws independently; never let those
+    // produce unsolicited completion messages for an old selected buffer.
+    pending_buffer_requests: u64,
 
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
 
@@ -313,6 +317,7 @@ impl Anland {
             data_source_token: None,
             heartbeat_timer_token: None,
             full_damage_frames_remaining: 0,
+            pending_buffer_requests: 0,
             ipc_outputs: Arc::new(Mutex::new(HashMap::new())),
             pending_clipboard: None,
             pending_rotation: None,
@@ -481,6 +486,7 @@ impl Anland {
         self.dmabufs.clear();
         self.last_frame_per_buffer.clear();
         self.frame_count = 0;
+        self.pending_buffer_requests = 0;
 
         // Dimensions of the buffers the consumer actually allocated this
         // session. They travel consumer->producer over the direct data
@@ -650,6 +656,24 @@ impl Anland {
                 warn!("buffer_ready eventfd read error: {err}");
                 return;
             }
+            if ret as usize != std::mem::size_of::<u64>() {
+                warn!("buffer_ready eventfd short read: {ret}");
+                return;
+            }
+            // The consumer permits a single in-flight buffer, and its shared
+            // memory stores only the selected slot, not a queue of slot IDs.
+            // A coalesced eventfd value or a second outstanding request has
+            // lost that association; do not acknowledge the wrong buffer.
+            if val != 1 || anland.pending_buffer_requests != 0 {
+                warn!(
+                    "invalid buffer-ready state: eventfd={val}, pending={}",
+                    anland.pending_buffer_requests
+                );
+                anland.pending_buffer_requests = 0;
+                anland.ctx.invalidate_consumer();
+                return;
+            }
+            anland.pending_buffer_requests = 1;
             if let Some(output) = anland.output.clone() {
                 state.niri.queue_redraw(&output);
             }
@@ -1004,7 +1028,11 @@ impl Anland {
         let _span = tracy_client::span!("Anland::render");
         let frame_start = Instant::now();
 
-        if self.ctx.is_fallback() {
+        if self.ctx.is_fallback() || self.pending_buffer_requests == 0 {
+            // The compositor can request redraws from its own animations.
+            // Android has not dequeued a new buffer in that case. Rendering
+            // and acknowledging the previous buffer would leave a stale
+            // completion message that the next Android frame could consume.
             return RenderResult::Skipped;
         }
 
@@ -1061,8 +1089,8 @@ impl Anland {
         };
         drop(target);
 
-        // If nothing changed on screen, skip frame-callback dispatch,
-        // presentation feedback, and GPU sync entirely to avoid wasting cycles.
+        // If nothing changed on screen, skip Wayland frame callbacks and
+        // presentation feedback. Still acknowledge the Android buffer dequeue.
         if res.damage.is_none() {
             let output_state = niri.output_state.get_mut(output).unwrap();
             match mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
@@ -1072,6 +1100,19 @@ impl Anland {
                 RedrawState::WaitingForEstimatedVBlank(_) => unreachable!(),
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => unreachable!(),
             };
+            // The Android consumer has already dequeued a buffer and is
+            // waiting in refresh_done() for exactly one completion message.
+            // Even if no pixels changed, acknowledge this dequeued buffer;
+            // otherwise it times out and forcibly disconnects the display.
+            self.ctx.set_render_fence(-1);
+            if !self.ctx.trigger_refresh() {
+                // The C producer has entered fallback after the failed send.
+                // Do not keep a stale in-flight request across reconnects.
+                self.pending_buffer_requests = 0;
+                warn!("failed to acknowledge no-damage Android buffer request");
+                return RenderResult::Skipped;
+            }
+            self.pending_buffer_requests -= 1;
             return RenderResult::NoDamage;
         }
 
@@ -1145,7 +1186,12 @@ impl Anland {
         self.register_heartbeat_timer(niri);
 
         // Signal the consumer ONLY when we actually rendered something.
-        self.ctx.trigger_refresh();
+        if !self.ctx.trigger_refresh() {
+            self.pending_buffer_requests = 0;
+            warn!("failed to submit Android render completion");
+            return RenderResult::Skipped;
+        }
+        self.pending_buffer_requests -= 1;
 
         RenderResult::Submitted
     }

@@ -57,6 +57,9 @@ int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *
 
 bool is_fallback(display_ctx *ctx);
 
+/* Reject a desynchronized buffer request and reconnect with a new buffer set. */
+void invalidate_consumer(display_ctx *ctx);
+
 /* Attempt to leave fallback: pick up the consumer fds and immediately receive the
  * dmabuf set (the consumer sends the dmabufs right after the fd handshake). Clears
  * fallback only when BOTH the fds and the dmabufs are in hand, so on a 0 return the

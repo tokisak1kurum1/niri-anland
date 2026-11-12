@@ -225,6 +225,7 @@ extern "C" {
         userdata: *mut c_void,
     ) -> c_int;
     pub fn is_fallback(ctx: *mut display_ctx) -> bool;
+    pub fn invalidate_consumer(ctx: *mut display_ctx);
     pub fn try_exit_fallback(ctx: *mut display_ctx) -> c_int;
     pub fn get_data_fd(ctx: *mut display_ctx) -> c_int;
     pub fn get_audio_fd(ctx: *mut display_ctx) -> c_int;
@@ -294,6 +295,10 @@ impl AnlandContext {
         unsafe { is_fallback(self.ctx) }
     }
 
+    pub fn invalidate_consumer(&mut self) {
+        unsafe { invalidate_consumer(self.ctx); }
+    }
+
     pub fn try_exit_fallback(&mut self) -> Result<(), ()> {
         let ret = unsafe { try_exit_fallback(self.ctx) };
         if ret == 0 {
@@ -340,10 +345,8 @@ impl AnlandContext {
         unsafe { get_data_fd(self.ctx) }
     }
 
-    pub fn trigger_refresh(&mut self) {
-        unsafe {
-            trigger_refresh(self.ctx);
-        }
+    pub fn trigger_refresh(&mut self) -> bool {
+        unsafe { trigger_refresh(self.ctx) == 0 }
     }
 
     pub fn set_render_fence(&mut self, fence_fd: RawFd) {
