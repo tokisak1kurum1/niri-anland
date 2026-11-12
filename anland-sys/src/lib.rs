@@ -340,10 +340,8 @@ impl AnlandContext {
         unsafe { get_data_fd(self.ctx) }
     }
 
-    pub fn trigger_refresh(&mut self) {
-        unsafe {
-            trigger_refresh(self.ctx);
-        }
+    pub fn trigger_refresh(&mut self) -> bool {
+        unsafe { trigger_refresh(self.ctx) == 0 }
     }
 
     pub fn set_render_fence(&mut self, fence_fd: RawFd) {

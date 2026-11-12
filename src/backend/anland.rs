@@ -54,6 +54,7 @@ mod gl {
     pub type GLsync = *mut c_void;
 
     type GlFlushFn = unsafe extern "C" fn();
+    type GlFinishFn = unsafe extern "C" fn();
     type GlFenceSyncFn = unsafe extern "C" fn(u32, u32) -> GLsync;
     type GlWaitSyncFn = unsafe extern "C" fn(GLsync, u32, u64);
     type GlClientWaitSyncFn = unsafe extern "C" fn(GLsync, u32, u64) -> u32;
@@ -61,6 +62,7 @@ mod gl {
     type EglSwapIntervalFn = unsafe extern "C" fn(smithay::backend::egl::ffi::egl::types::EGLDisplay, i32) -> u32;
 
     static GL_FLUSH: OnceLock<Option<GlFlushFn>> = OnceLock::new();
+    static GL_FINISH: OnceLock<Option<GlFinishFn>> = OnceLock::new();
     static GL_FENCE_SYNC: OnceLock<Option<GlFenceSyncFn>> = OnceLock::new();
     static GL_WAIT_SYNC: OnceLock<Option<GlWaitSyncFn>> = OnceLock::new();
     static GL_CLIENT_WAIT_SYNC: OnceLock<Option<GlClientWaitSyncFn>> = OnceLock::new();
@@ -80,6 +82,17 @@ mod gl {
         if let Some(f) = func {
             f();
         }
+    }
+
+    #[allow(non_snake_case)]
+    pub unsafe fn Finish() {
+        let func = GL_FINISH.get_or_init(|| {
+            let addr = smithay::backend::egl::get_proc_address("glFinish");
+            if addr.is_null() { None } else {
+                Some(std::mem::transmute::<*const (), GlFinishFn>(addr as *const ()))
+            }
+        });
+        if let Some(f) = func { f(); }
     }
 
     #[allow(non_snake_case)]
@@ -269,6 +282,10 @@ pub struct Anland {
     data_source_token: Option<RegistrationToken>,
     heartbeat_timer_token: Option<RegistrationToken>,
     full_damage_frames_remaining: usize,
+    // One Android dequeue request permits exactly one frame completion.
+    // Niri animations may queue redraws independently; never let those
+    // produce unsolicited completion messages for an old selected buffer.
+    pending_buffer_requests: u64,
 
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
 
@@ -313,6 +330,7 @@ impl Anland {
             data_source_token: None,
             heartbeat_timer_token: None,
             full_damage_frames_remaining: 0,
+            pending_buffer_requests: 0,
             ipc_outputs: Arc::new(Mutex::new(HashMap::new())),
             pending_clipboard: None,
             pending_rotation: None,
@@ -481,6 +499,7 @@ impl Anland {
         self.dmabufs.clear();
         self.last_frame_per_buffer.clear();
         self.frame_count = 0;
+        self.pending_buffer_requests = 0;
 
         // Dimensions of the buffers the consumer actually allocated this
         // session. They travel consumer->producer over the direct data
@@ -650,6 +669,15 @@ impl Anland {
                 warn!("buffer_ready eventfd read error: {err}");
                 return;
             }
+            if ret as usize != std::mem::size_of::<u64>() {
+                warn!("buffer_ready eventfd short read: {ret}");
+                return;
+            }
+            if val != 1 {
+                warn!("unexpected buffer_ready counter {val}: consumer must have one in-flight buffer");
+            }
+            anland.pending_buffer_requests =
+                anland.pending_buffer_requests.saturating_add(val);
             if let Some(output) = anland.output.clone() {
                 state.niri.queue_redraw(&output);
             }
@@ -1004,7 +1032,11 @@ impl Anland {
         let _span = tracy_client::span!("Anland::render");
         let frame_start = Instant::now();
 
-        if self.ctx.is_fallback() {
+        if self.ctx.is_fallback() || self.pending_buffer_requests == 0 {
+            // The compositor can request redraws from its own animations.
+            // Android has not dequeued a new buffer in that case. Rendering
+            // and acknowledging the previous buffer would leave a stale
+            // completion message that the next Android frame could consume.
             return RenderResult::Skipped;
         }
 
@@ -1028,6 +1060,15 @@ impl Anland {
         if self.full_damage_frames_remaining > 0 {
             age = 0;
             self.full_damage_frames_remaining -= 1;
+        }
+
+        // Diagnostics only: disable the Anland buffer-age/partial-repaint path.
+        // If workspace animations stop flickering with this flag, the cause is
+        // damage tracking or BufferQueue reuse rather than Niri's animation.
+        if std::env::var_os("NIRI_ANLAND_FORCE_FULL_DAMAGE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            age = 0;
         }
 
         let ctx = RenderCtx {
@@ -1061,8 +1102,8 @@ impl Anland {
         };
         drop(target);
 
-        // If nothing changed on screen, skip frame-callback dispatch,
-        // presentation feedback, and GPU sync entirely to avoid wasting cycles.
+        // If nothing changed on screen, skip Wayland frame callbacks and
+        // presentation feedback. Still acknowledge the Android buffer dequeue.
         if res.damage.is_none() {
             let output_state = niri.output_state.get_mut(output).unwrap();
             match mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
@@ -1072,6 +1113,16 @@ impl Anland {
                 RedrawState::WaitingForEstimatedVBlank(_) => unreachable!(),
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => unreachable!(),
             };
+            // The Android consumer has already dequeued a buffer and is
+            // waiting in refresh_done() for exactly one completion message.
+            // Even if no pixels changed, acknowledge this dequeued buffer;
+            // otherwise it times out and forcibly disconnects the display.
+            self.ctx.set_render_fence(-1);
+            if !self.ctx.trigger_refresh() {
+                warn!("failed to acknowledge no-damage Android buffer request");
+                return RenderResult::Skipped;
+            }
+            self.pending_buffer_requests -= 1;
             return RenderResult::NoDamage;
         }
 
@@ -1137,7 +1188,10 @@ impl Anland {
         if render_fence_fd >= 0 {
             self.ctx.set_render_fence(render_fence_fd);
         } else {
-            unsafe { gl::Flush(); }
+            // Without an exportable native fence Android would queue this
+            // buffer as already ready. glFlush is not a completion guarantee;
+            // glFinish is the safe fallback to prevent torn/incomplete frames.
+            unsafe { gl::Finish(); }
             self.ctx.set_render_fence(-1);
         }
 
@@ -1145,7 +1199,11 @@ impl Anland {
         self.register_heartbeat_timer(niri);
 
         // Signal the consumer ONLY when we actually rendered something.
-        self.ctx.trigger_refresh();
+        if !self.ctx.trigger_refresh() {
+            warn!("failed to submit Android render completion");
+            return RenderResult::Skipped;
+        }
+        self.pending_buffer_requests -= 1;
 
         RenderResult::Submitted
     }

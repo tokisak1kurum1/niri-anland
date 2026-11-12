@@ -370,10 +370,15 @@ int trigger_refresh(display_ctx *ctx)
         c->cmsg_len = CMSG_LEN(sizeof(int));
         memcpy(CMSG_DATA(c), &ctx->pending_render_fence, sizeof(int));
     }
-    sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t sent = sendmsg(ctx->fence_fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    int send_errno = errno;
     if (ctx->pending_render_fence >= 0) {
         close(ctx->pending_render_fence);
         ctx->pending_render_fence = -1;
+    }
+    if (sent != 1) {
+        ANLAND_LOG("render completion sendmsg failed (ret=%zd errno=%d)", sent, send_errno);
+        return -1;
     }
     return 0;
 }
@@ -651,11 +656,9 @@ int create_native_render_fence(void *egl_display)
 
     init_egl_procs();
 
-    // MUST flush GL pipeline before creating fence sync
-    if (s_pGlFlush) {
-        s_pGlFlush();
-    }
-
+    // A native fence must first be inserted into the GL command stream.
+    // Flush AFTER eglCreateSyncKHR, so the newly created fence is submitted
+    // with the preceding render commands (as in Android HWUI's EglManager).
     if (!s_pCreateSync || !s_pDupFence || !s_pDestroySync) {
         return -1;
     }
@@ -665,6 +668,9 @@ int create_native_render_fence(void *egl_display)
         return -1;
     }
 
+    if (s_pGlFlush) {
+        s_pGlFlush();
+    }
     int fence_fd = s_pDupFence(egl_display, sync);
     s_pDestroySync(egl_display, sync);
     return fence_fd;
