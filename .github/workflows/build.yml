@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - anland
+      - ci/test-anland-completion-20261112
     tags:
       - '*-anland.*'
   workflow_dispatch:
@@ -56,6 +57,19 @@ jobs:
           key: cargo-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.arch }}-
+
+      - name: C completion channel tests
+        run: |
+          gcc -std=gnu11 -O2 -Wall -Wextra \
+            anland-sys/tests/completion_handshake.c \
+            anland-sys/src/vendor/socket_utils.c \
+            -ldl -o /tmp/anland-completion-test
+          /tmp/anland-completion-test
+
+      - name: Rust buffer request tests
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          cargo test --release --bin niri completion_tests -- --nocapture
 
       - name: Build
         run: |
