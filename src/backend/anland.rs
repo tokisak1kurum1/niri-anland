@@ -660,11 +660,20 @@ impl Anland {
                 warn!("buffer_ready eventfd short read: {ret}");
                 return;
             }
-            if val != 1 {
-                warn!("unexpected buffer_ready counter {val}: consumer must have one in-flight buffer");
+            // The consumer permits a single in-flight buffer, and its shared
+            // memory stores only the selected slot, not a queue of slot IDs.
+            // A coalesced eventfd value or a second outstanding request has
+            // lost that association; do not acknowledge the wrong buffer.
+            if val != 1 || anland.pending_buffer_requests != 0 {
+                warn!(
+                    "invalid buffer-ready state: eventfd={val}, pending={}",
+                    anland.pending_buffer_requests
+                );
+                anland.pending_buffer_requests = 0;
+                anland.ctx.invalidate_consumer();
+                return;
             }
-            anland.pending_buffer_requests =
-                anland.pending_buffer_requests.saturating_add(val);
+            anland.pending_buffer_requests = 1;
             if let Some(output) = anland.output.clone() {
                 state.niri.queue_redraw(&output);
             }
@@ -1097,6 +1106,9 @@ impl Anland {
             // otherwise it times out and forcibly disconnects the display.
             self.ctx.set_render_fence(-1);
             if !self.ctx.trigger_refresh() {
+                // The C producer has entered fallback after the failed send.
+                // Do not keep a stale in-flight request across reconnects.
+                self.pending_buffer_requests = 0;
                 warn!("failed to acknowledge no-damage Android buffer request");
                 return RenderResult::Skipped;
             }
@@ -1175,6 +1187,7 @@ impl Anland {
 
         // Signal the consumer ONLY when we actually rendered something.
         if !self.ctx.trigger_refresh() {
+            self.pending_buffer_requests = 0;
             warn!("failed to submit Android render completion");
             return RenderResult::Skipped;
         }
