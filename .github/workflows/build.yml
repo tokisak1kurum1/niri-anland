@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - anland
+      - ci/build-handshake-recovery-arm64-20261112
     tags:
       - '*-anland.*'
   workflow_dispatch:
