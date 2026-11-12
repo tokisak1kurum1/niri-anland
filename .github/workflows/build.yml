@@ -67,6 +67,20 @@ jobs:
           export CARGO_BUILD_JOBS=4
           cargo test --workspace --exclude anland-sys
 
+      - name: Compare test baseline on anland
+        if: always()
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          export CARGO_BUILD_JOBS=4
+          git fetch --no-tags --depth=1 origin anland
+          git worktree add --detach /tmp/niri-base FETCH_HEAD
+          cd /tmp/niri-base
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo test --workspace --exclude anland-sys
+
       - name: Build
         if: always()
         run: |
