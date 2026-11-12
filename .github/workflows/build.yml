@@ -57,6 +57,14 @@ jobs:
           restore-keys: |
             cargo-${{ runner.arch }}-
 
+      - name: Test Anland completion channel
+        run: |
+          gcc -std=gnu11 -O2 -Wall -Wextra \
+            anland-sys/tests/completion_handshake.c \
+            anland-sys/src/vendor/socket_utils.c \
+            -ldl -o /tmp/anland-completion-test
+          /tmp/anland-completion-test
+
       - name: Build
         run: |
           export PATH="$HOME/.cargo/bin:${PATH}"
