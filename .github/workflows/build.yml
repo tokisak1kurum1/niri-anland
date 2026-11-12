@@ -69,7 +69,9 @@ jobs:
       - name: Rust buffer request tests
         run: |
           export PATH="$HOME/.cargo/bin:${PATH}"
-          cargo test --release --bin niri completion_tests -- --nocapture
+          set -euo pipefail
+          cargo test --release --lib completion_tests -- --nocapture | tee /tmp/anland-rust-tests.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed;' /tmp/anland-rust-tests.log
 
       - name: Build
         run: |
