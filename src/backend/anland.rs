@@ -269,6 +269,8 @@ pub struct Anland {
     data_source_token: Option<RegistrationToken>,
     heartbeat_timer_token: Option<RegistrationToken>,
     full_damage_frames_remaining: usize,
+    // The Android consumer expects one completion for each buffer request.
+    pending_buffer_request: bool,
 
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
 
@@ -313,6 +315,7 @@ impl Anland {
             data_source_token: None,
             heartbeat_timer_token: None,
             full_damage_frames_remaining: 0,
+            pending_buffer_request: false,
             ipc_outputs: Arc::new(Mutex::new(HashMap::new())),
             pending_clipboard: None,
             pending_rotation: None,
@@ -481,6 +484,7 @@ impl Anland {
         self.dmabufs.clear();
         self.last_frame_per_buffer.clear();
         self.frame_count = 0;
+        self.pending_buffer_request = false;
 
         // Dimensions of the buffers the consumer actually allocated this
         // session. They travel consumer->producer over the direct data
@@ -650,6 +654,11 @@ impl Anland {
                 warn!("buffer_ready eventfd read error: {err}");
                 return;
             }
+            if ret as usize != std::mem::size_of::<u64>() {
+                warn!("buffer_ready eventfd short read: {ret}");
+                return;
+            }
+            anland.pending_buffer_request = true;
             if let Some(output) = anland.output.clone() {
                 state.niri.queue_redraw(&output);
             }
@@ -1004,7 +1013,7 @@ impl Anland {
         let _span = tracy_client::span!("Anland::render");
         let frame_start = Instant::now();
 
-        if self.ctx.is_fallback() {
+        if self.ctx.is_fallback() || !self.pending_buffer_request {
             return RenderResult::Skipped;
         }
 
@@ -1072,6 +1081,10 @@ impl Anland {
                 RedrawState::WaitingForEstimatedVBlank(_) => unreachable!(),
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => unreachable!(),
             };
+            // Even an unchanged frame must release the Android buffer.
+            self.ctx.set_render_fence(-1);
+            self.ctx.trigger_refresh();
+            self.pending_buffer_request = false;
             return RenderResult::NoDamage;
         }
 
@@ -1146,6 +1159,7 @@ impl Anland {
 
         // Signal the consumer ONLY when we actually rendered something.
         self.ctx.trigger_refresh();
+        self.pending_buffer_request = false;
 
         RenderResult::Submitted
     }
