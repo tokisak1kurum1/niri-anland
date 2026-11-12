@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - anland
+      - ci/audit-anland-minimal-20261112
     tags:
       - '*-anland.*'
   workflow_dispatch:
@@ -57,6 +58,23 @@ jobs:
           restore-keys: |
             cargo-${{ runner.arch }}-
 
+      - name: Check unchanged upstream Cargo.lock
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          if cargo metadata --locked --format-version 1 > /tmp/cargo-metadata.json 2> /tmp/locked-error.txt; then
+            echo "UNMODIFIED_LOCK_VALID"
+          else
+            echo "UNMODIFIED_LOCK_NEEDS_UPDATE"
+            cat /tmp/locked-error.txt
+          fi
+
+      - name: Check upstream-required formatting
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          cargo +nightly fmt --all -- --check
+
       - name: Test Anland completion channel
         run: |
           gcc -std=gnu11 -O2 -Wall -Wextra \
@@ -74,6 +92,11 @@ jobs:
           export CARGO_BUILD_JOBS=4
           cargo build --release
           ccache --show-stats
+
+      - name: Run Rust library tests
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          cargo test --release --lib
 
       - name: Show binary
         run: |
