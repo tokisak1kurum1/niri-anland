@@ -240,6 +240,13 @@ impl EventSource for FdEventSource {
 // Anland Backend
 // ---------------------------------------------------------------------------
 
+// The consumer publishes only one selected buffer index in shared memory.
+// Reject eventfd coalescing or concurrent dequeues rather than guessing which
+// buffers require a completion.
+fn buffer_ready_is_synchronized(count: u64, pending: u64) -> bool {
+    count == 1 && pending == 0
+}
+
 pub struct Anland {
     ctx: AnlandContext,
     _socket_path: String,
@@ -664,7 +671,7 @@ impl Anland {
             // memory stores only the selected slot, not a queue of slot IDs.
             // A coalesced eventfd value or a second outstanding request has
             // lost that association; do not acknowledge the wrong buffer.
-            if val != 1 || anland.pending_buffer_requests != 0 {
+            if !buffer_ready_is_synchronized(val, anland.pending_buffer_requests) {
                 warn!(
                     "invalid buffer-ready state: eventfd={val}, pending={}",
                     anland.pending_buffer_requests
@@ -1271,5 +1278,25 @@ fn char_to_keycode(c: char) -> Option<(u32, bool)> {
         'V' => Some((47, true)), 'B' => Some((48, true)), 'N' => Some((49, true)), 'M' => Some((50, true)),
         '<' => Some((51, true)), '>' => Some((52, true)), '?' => Some((53, true)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::buffer_ready_is_synchronized;
+
+    #[test]
+    fn accept_exactly_one_unpaired_consumer_request() {
+        assert!(buffer_ready_is_synchronized(1, 0));
+    }
+
+    #[test]
+    fn reject_coalesced_or_duplicate_consumer_requests() {
+        for (count, pending) in [(0, 0), (2, 0), (1, 1), (2, 1), (u64::MAX, 0)] {
+            assert!(
+                !buffer_ready_is_synchronized(count, pending),
+                "invalid request was accepted: count={count} pending={pending}"
+            );
+        }
     }
 }
