@@ -58,6 +58,24 @@ jobs:
           restore-keys: |
             cargo-${{ runner.arch }}-
 
+      - name: Install Rust nightly for formatting
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          rustup toolchain install nightly --profile minimal --component rustfmt
+
+      - name: Check formatting
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          cargo +nightly fmt --all -- --check
+
+      - name: Run tests
+        run: |
+          export PATH="$HOME/.cargo/bin:${PATH}"
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          export CARGO_BUILD_JOBS=4
+          cargo test --all
+
       - name: Build
         run: |
           export PATH="$HOME/.cargo/bin:${PATH}"
