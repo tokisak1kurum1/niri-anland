@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  DEPS_APT: curl gcc clang pkg-config libudev-dev libgbm-dev libdrm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libpipewire-0.3-dev libpango1.0-dev libdisplay-info-dev file
+  DEPS_APT: curl gcc clang pkg-config libudev-dev libgbm-dev libdrm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libpipewire-0.3-dev libpango1.0-dev libdisplay-info-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libadwaita-1-dev file
 
 jobs:
   build:
